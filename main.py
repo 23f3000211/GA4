@@ -503,7 +503,9 @@ async def vector_search(request: Request):
     )
 
     for doc in top_k_docs:
-        doc["rerank_score"] = rerank_scores[doc["doc_id"]]
+        doc["rerank_score"] = rerank_scores.get(
+        doc["doc_id"],
+        0.0)
         
 
     # 6. Sort by reranker score descending,
