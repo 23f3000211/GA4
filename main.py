@@ -197,42 +197,203 @@ async def root():
     return {"ok": True, "email": config.EMAIL}
 
 # ================= Q3: /q3/answer =================
+# ================= Q3: /grounded-answer =================
+
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been",
+    "what", "who", "when", "where", "which", "how", "why",
+    "does", "do", "did", "can", "could", "would", "should",
+    "of", "in", "on", "at", "to", "for", "from", "by", "and",
+    "or", "with", "about", "tell", "me", "please"
+}
+
+def normalize_text(text):
+    return re.sub(r"[^a-z0-9\s]", " ", str(text).lower())
+
+
+def tokens(text):
+    return {
+        word for word in normalize_text(text).split()
+        if len(word) > 2 and word not in STOPWORDS
+    }
+
+
+def get_question_keywords(question):
+    return tokens(question)
+
+
+def chunk_supports_question(question, chunk_text):
+    q = get_question_keywords(question)
+    c = tokens(chunk_text)
+
+    if not q or not c:
+        return False, 0.0
+
+    overlap = q & c
+    overlap_ratio = len(overlap) / len(q)
+
+    # Strong direct lexical support
+    if overlap_ratio >= 0.5 and len(overlap) >= 2:
+        return True, overlap_ratio
+
+    # Handle questions where the key entity appears directly
+    # Example: "What year was FAISS released?"
+    # Chunk: "FAISS ... open-sourced in 2017."
+    if len(overlap) >= 1 and overlap_ratio >= 0.34:
+        return True, overlap_ratio
+
+    return False, overlap_ratio
+
+
 @app.post("/grounded-answer")
 async def q3_answer(request: Request):
-    body = await request.json()
-    question = body.get("question", "")
-    chunks = body.get("chunks", [])
-    prompt = (
-        "You are a highly reliable Grounded QA API for medical and legal compliance.\n"
-        "Your task is to answer the user's question strictly using ONLY the provided context chunks.\n"
-        "1. If the question CANNOT be answered from the chunks, you MUST return:\n"
-        "   - answerable: false\n"
-        "   - answer: \"I don't know\" (exact match)\n"
-        "   - citations: [] (empty array)\n"
-        "   - confidence: 0.1\n"
-        "2. If it CAN be answered, return:\n"
-        "   - answerable: true\n"
-        "   - answer: <your grounded answer>\n"
-        "   - citations: [<list of ONLY the chunk_ids you used>]\n"
-        "   - confidence: <float between 0.8 and 1.0>\n"
-        "NEVER use outside knowledge. Return strictly JSON with exactly these 4 keys.\n\n"
-        f"QUESTION:\n{question}\n\n"
-        f"CHUNKS:\n{json.dumps(chunks, indent=2)}"
-    )
     try:
-        out = parse_json(await chat([{"role": "user", "content": prompt}], model="gpt-4o-mini", max_tokens=1000))
-        if not out.get("answerable", False) or out.get("confidence", 1.0) <= 0.3:
-            return {"answer": "I don't know", "citations": [], "confidence": 0.1, "answerable": False}
-        valid_ids = [c["chunk_id"] for c in chunks]
-        cites = [c for c in out.get("citations", []) if c in valid_ids]
+        body = await request.json()
+
+        if not isinstance(body, dict):
+            return {
+                "answer": "I don't know",
+                "citations": [],
+                "confidence": 0.1,
+                "answerable": False
+            }
+
+        question = body.get("question")
+        chunks = body.get("chunks")
+
+        if not isinstance(question, str) or not question.strip():
+            return {
+                "answer": "I don't know",
+                "citations": [],
+                "confidence": 0.1,
+                "answerable": False
+            }
+
+        if not isinstance(chunks, list) or not chunks:
+            return {
+                "answer": "I don't know",
+                "citations": [],
+                "confidence": 0.1,
+                "answerable": False
+            }
+
+        valid_chunks = [
+            c for c in chunks
+            if isinstance(c, dict)
+            and isinstance(c.get("chunk_id"), str)
+            and isinstance(c.get("text"), str)
+            and c["chunk_id"].strip()
+            and c["text"].strip()
+        ]
+
+        if not valid_chunks:
+            return {
+                "answer": "I don't know",
+                "citations": [],
+                "confidence": 0.1,
+                "answerable": False
+            }
+
+        # Determine whether any provided chunk actually supports the question.
+        supporting = []
+
+        for chunk in valid_chunks:
+            supported, score = chunk_supports_question(
+                question,
+                chunk["text"]
+            )
+
+            if supported:
+                supporting.append((score, chunk))
+
+        # IMPORTANT: deterministic answerability gate
+        if not supporting:
+            return {
+                "answer": "I don't know",
+                "citations": [],
+                "confidence": 0.1,
+                "answerable": False
+            }
+
+        # Rank supporting chunks by lexical support.
+        supporting.sort(
+            key=lambda x: (-x[0], x[1]["chunk_id"])
+        )
+
+        selected_chunks = [
+            chunk for _, chunk in supporting[:5]
+        ]
+
+        # Only now ask the model to formulate the answer.
+        prompt = (
+            "You are a grounded question-answering system.\n"
+            "Answer ONLY from the provided supporting chunks.\n"
+            "Do not use outside knowledge.\n"
+            "If the chunks do not contain enough information to answer "
+            "the question, return answerable=false.\n\n"
+            "Return strictly JSON with exactly these keys:\n"
+            "{\n"
+            '  "answer": "string",\n'
+            '  "citations": ["chunk_id"],\n'
+            '  "confidence": 0.0,\n'
+            '  "answerable": true\n'
+            "}\n\n"
+            f"QUESTION:\n{question}\n\n"
+            f"SUPPORTING CHUNKS:\n"
+            f"{json.dumps(selected_chunks, indent=2)}"
+        )
+
+        out = parse_json(
+            await chat(
+                [{"role": "user", "content": prompt}],
+                model="gpt-4o-mini",
+                max_tokens=500
+            )
+        )
+
+        valid_ids = {
+            c["chunk_id"] for c in valid_chunks
+        }
+
+        citations = [
+            cid for cid in out.get("citations", [])
+            if cid in valid_ids
+        ]
+
+        answer = str(out.get("answer", "")).strip()
+
+        # If model fails to produce a grounded answer, fail safely.
+        if (
+            not answer
+            or answer.lower() == "i don't know"
+            or not citations
+        ):
+            return {
+                "answer": "I don't know",
+                "citations": [],
+                "confidence": 0.1,
+                "answerable": False
+            }
+
+        confidence = float(out.get("confidence", 0.8))
+
+        # Clamp confidence to valid range.
+        confidence = max(0.0, min(1.0, confidence))
+
         return {
-            "answer": out.get("answer", "I don't know"),
-            "citations": cites,
-            "confidence": float(out.get("confidence", 0.9)),
+            "answer": answer,
+            "citations": citations,
+            "confidence": confidence,
             "answerable": True
         }
+
     except Exception:
-        return {"answer": "I don't know", "citations": [], "confidence": 0.1, "answerable": False}
+        return {
+            "answer": "I don't know",
+            "citations": [],
+            "confidence": 0.1,
+            "answerable": False
+        }
 
 # ================= Q4: /vector-search =================
 def cosine_sim(a, b):
