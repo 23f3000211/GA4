@@ -133,27 +133,55 @@ Q4_RERANKER = {}
 async def lifespan(app: FastAPI):
     global Q4_DOCS, Q4_EMBEDDINGS, Q4_RERANKER
 
-    try:
-        docs, embs, reranker = generate_q4(config.EMAIL)
+    base_dir = os.path.dirname(
+        os.path.abspath(__file__)
+    )
 
-        Q4_DOCS = docs
+    # Load documents.csv
+    with open(
+        os.path.join(base_dir, "documents.csv"),
+        "r",
+        encoding="utf-8",
+        newline=""
+    ) as f:
+        reader = csv.DictReader(f)
+        Q4_DOCS = list(reader)
 
-        Q4_EMBEDDINGS = {
-            doc_id: np.array(vector, dtype=np.float32)
-            for doc_id, vector in embs.items()
-        }
+    # Convert CSV year from string to integer
+    for doc in Q4_DOCS:
+        if "year" in doc:
+            doc["year"] = int(doc["year"])
 
-        Q4_RERANKER = reranker
+    # Load embeddings.json
+    with open(
+        os.path.join(base_dir, "embeddings.json"),
+        "r",
+        encoding="utf-8"
+    ) as f:
+        raw_embeddings = json.load(f)
 
-        print(
-            f"Q4 data generated for {config.EMAIL}: "
-            f"{len(Q4_DOCS)} docs, "
-            f"{len(Q4_EMBEDDINGS)} embeddings, "
-            f"{len(Q4_RERANKER)} queries"
+    Q4_EMBEDDINGS = {
+        doc_id: np.array(
+            vector,
+            dtype=np.float64
         )
+        for doc_id, vector in raw_embeddings.items()
+    }
 
-    except Exception as e:
-        print(f"Failed to generate Q4 data: {e}")
+    # Load reranker_scores.json
+    with open(
+        os.path.join(base_dir, "reranker_scores.json"),
+        "r",
+        encoding="utf-8"
+    ) as f:
+        Q4_RERANKER = json.load(f)
+
+    print(
+        f"Q4 data loaded: "
+        f"{len(Q4_DOCS)} docs, "
+        f"{len(Q4_EMBEDDINGS)} embeddings, "
+        f"{len(Q4_RERANKER)} queries"
+    )
 
     yield
 
