@@ -539,6 +539,19 @@ async def vector_search(request: Request):
             for doc in top_k_docs[:rerank_top_n]
         ]
     }
+
+@app.get("/debug-q4")
+async def debug_q4():
+    return {
+        "email": config.EMAIL,
+        "docs": len(Q4_DOCS),
+        "embeddings": len(Q4_EMBEDDINGS),
+        "queries": len(Q4_RERANKER),
+        "first_doc": Q4_DOCS[0] if Q4_DOCS else None,
+        "first_embedding": Q4_EMBEDDINGS["D001"].tolist()
+        if "D001" in Q4_EMBEDDINGS else None,
+        "q001_d001": Q4_RERANKER.get("Q001", {}).get("D001")
+    }
 # ================= Q5: GraphRAG Endpoints =================
 @app.post("/extract-graph")
 async def extract_graph(request: Request):
