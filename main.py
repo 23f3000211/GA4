@@ -447,7 +447,6 @@ def matches_filter(doc, filters):
     return True
 
 @app.post("/vector-search")
-@app.post("/vector-search")
 async def vector_search(request: Request):
     body = await request.json()
 
@@ -504,9 +503,7 @@ async def vector_search(request: Request):
     )
 
     for doc in top_k_docs:
-        doc["rerank_score"] = query_scores.get(
-            doc["doc_id"],
-            0.0
+        doc["rerank_score"] = rerank_scores[doc["doc_id"]]
         )
 
     # 6. Sort by reranker score descending,
