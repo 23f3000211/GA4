@@ -411,14 +411,24 @@ async def q3_answer(request: Request):
         }
 
 # ================= Q4: /vector-search =================
+# ================= Q4: /vector-search =================
+
 def cosine_sim(a, b):
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
+
     if norm_a == 0 or norm_b == 0:
         return 0.0
-    return float(np.dot(a, b) / (norm_a * norm_b))
+
+    return float(
+        np.dot(a, b) / (norm_a * norm_b)
+    )
+
 
 def matches_filter(doc, filters):
+    if not filters:
+        return True
+
     for key, condition in filters.items():
 
         if key not in doc:
@@ -446,33 +456,49 @@ def matches_filter(doc, filters):
 
     return True
 
+
 @app.post("/vector-search")
 async def vector_search(request: Request):
+
     body = await request.json()
 
     query_id = body["query_id"]
+
     query_vector = np.array(
         body["query_vector"],
         dtype=np.float32
     )
 
     top_k = int(body["top_k"])
-    rerank_top_n = int(body["rerank_top_n"])
-    filters = body.get("filter", {})
 
-    # 1. Filter documents first
-    filtered_docs = [
-        doc
-        for doc in Q4_DOCS
-        if matches_filter(doc, filters)
-    ]
+    rerank_top_n = int(
+        body["rerank_top_n"]
+    )
 
-    # 2. Compute cosine similarity
+    filters = body.get(
+        "filter",
+        {}
+    )
+
+    # -----------------------------
+    # 1. Metadata filtering
+    # -----------------------------
+
     candidates = []
 
-    for doc in filtered_docs:
+    for doc in Q4_DOCS:
+
+        if not matches_filter(
+            doc,
+            filters
+        ):
+            continue
+
         doc_id = doc["doc_id"]
-        doc_vector = Q4_EMBEDDINGS[doc_id]
+
+        doc_vector = Q4_EMBEDDINGS[
+            doc_id
+        ]
 
         similarity = cosine_sim(
             query_vector,
@@ -484,8 +510,12 @@ async def vector_search(request: Request):
             "similarity": similarity
         })
 
-    # 3. Sort by similarity descending,
-    #    then doc_id ascending
+    # -----------------------------
+    # 2. Retrieve top_k
+    # Similarity descending
+    # doc_id ascending on tie
+    # -----------------------------
+
     candidates.sort(
         key=lambda x: (
             -x["similarity"],
@@ -493,73 +523,34 @@ async def vector_search(request: Request):
         )
     )
 
-    # 4. Keep only top_k for reranking
-    top_k_docs = candidates[:top_k]
+    top_k_docs = candidates[
+        :top_k
+    ]
 
-    # 5. Apply reranker scores only to retrieved docs
+    # -----------------------------
+    # 3. Re-rank top_k documents
+    # -----------------------------
+
     query_scores = Q4_RERANKER.get(
         query_id,
         {}
     )
 
     for doc in top_k_docs:
-        doc["rerank_score"] = rerank_scores.get(
-        doc["doc_id"],
-        0.0)
-        
 
-    # 6. Sort by reranker score descending,
-    #    then doc_id ascending
-    top_k_docs.sort(
-        key=lambda x: (
-            -x["rerank_score"],
-            x["doc_id"]
-        )
-    )
-
-    # 7. Return final top rerank_top_n
-    return {
-        "matches": [
-            doc["doc_id"]
-            for doc in top_k_docs[:rerank_top_n]
-        ]
-    }
-
-    # -----------------------------
-    # 3. Retrieve top_k
-    # Similarity descending
-    # Tie-break doc_id ascending
-    # -----------------------------
-    candidates.sort(
-        key=lambda x: (
-            -x["similarity"],
-            x["doc_id"]
-        )
-    )
-
-    top_k_docs = candidates[:top_k]
-
-    # -----------------------------
-    # 4. Re-rank retrieved docs
-    # -----------------------------
-    rerank_scores = RERANKER_SCORES.get(
-        query_id,
-        {}
-    )
-
-    for doc in top_k_docs:
         doc["rerank_score"] = float(
-            rerank_scores.get(
+            query_scores.get(
                 doc["doc_id"],
                 0.0
             )
         )
 
     # -----------------------------
-    # 5. Final re-ranking
+    # 4. Sort by reranker score
     # Score descending
-    # Tie-break doc_id ascending
+    # doc_id ascending on tie
     # -----------------------------
+
     top_k_docs.sort(
         key=lambda x: (
             -x["rerank_score"],
@@ -568,12 +559,15 @@ async def vector_search(request: Request):
     )
 
     # -----------------------------
-    # 6. Return top rerank_top_n
+    # 5. Return final results
     # -----------------------------
+
     return {
         "matches": [
             doc["doc_id"]
-            for doc in top_k_docs[:rerank_top_n]
+            for doc in top_k_docs[
+                :rerank_top_n
+            ]
         ]
     }
 # ================= Q5: GraphRAG Endpoints =================
