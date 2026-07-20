@@ -442,7 +442,7 @@ async def vector_search(request: Request):
     # 4. Re-rank
     rerank_scores = Q4_RERANKER.get(query_id, {})
     for doc in top_k_docs:
-        doc["rerank_score"] = rerank_scores.get(doc["doc_id"], -999.0)
+        doc["rerank_score"] = rerank_scores.get(doc["doc_id"], 0.0)
     top_k_docs.sort(key=lambda x: (-x["rerank_score"], x["doc_id"]))
     return {"matches": [d["doc_id"] for d in top_k_docs[:rerank_top_n]]}
 
